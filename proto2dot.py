@@ -209,7 +209,7 @@ def main():
 	from optparse import OptionParser
 
 	parser = OptionParser()
-	parser.usage = "usage: %prog [options] "
+	parser.usage = "%prog [options] <proto files>"
 
 	parser.add_option( "-o", "--output", dest="output", help="Output directory", type="string", default="." )
 	parser.add_option( "-c", "--protoc", dest="protoc", help="Protocol buffer compiler", type="string", default="protoc" )
