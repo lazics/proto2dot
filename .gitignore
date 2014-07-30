@@ -1,0 +1,5 @@
+*.pyc
+*.swp
+__*
+*.proto.dot*
+*.proto.dox

@@ -1,0 +1,31 @@
+// Test message.
+// This message sends a search request.
+message SearchRequest {
+  required string query = 1; // Query string used in search request.
+  optional int32 page_number = 2; // Page number.
+  optional int32 result_per_page = 3 [default = 10]; // Number of results per page. The default is 10.
+  // Corpus (type) of the search request.
+  enum Corpus {
+    UNIVERSAL = 0; // Universal, i.e. typeless search
+    WEB = 1; // Web search
+    IMAGES = 2; // Image search
+    LOCAL = 3; // Local search
+    NEWS = 4; // News search
+    PRODUCTS = 5; // Product search
+    VIDEO = 6; // Video search
+  }
+  optional Corpus corpus = 4 [default = UNIVERSAL]; // Corpus (type) of the search. The default is 'UNIVERSAL'.
+}
+
+// Another test message.
+// This message sends a search response.
+message SearchResponse {
+  // This message contains actual result of the search response.
+  message Result {
+    required string url = 1; // Page (result) URL.
+    optional string title = 2; // Page title.
+    repeated string snippets = 3; // Some snippets from the page.
+  }
+  repeated Result result = 1; // Search results.
+}
+
