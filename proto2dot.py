@@ -15,11 +15,195 @@ import glob
 import importlib
 import traceback
 import StringIO
+import copy
+import pprint
+
+from google.protobuf import descriptor
+from google.protobuf import reflection
 
 __version__	= "1.0"
 __author__	= "Laszlo Bako-Szabo"
 __email__	= "lazics@gmail.com"
 __license__	= "GPLv3"
+
+class Proto2Dot(object):
+	output = None
+	tree = None
+
+	def __init__(self, options):
+		self.options = options
+
+		self.output = {
+			'nodes': {},
+			'connections': [],
+		}
+
+		self.tree = {
+			'name': None,
+			'name_long': None,
+			'label': None,
+			'path': [],
+			'parent': None,
+			'children': {},
+			'links': {},
+		}
+
+		self.field_types_by_value={}
+
+		for field_descr_n, field_descr_v in descriptor.FieldDescriptor.__dict__.iteritems():
+			if not field_descr_n.startswith('TYPE_'):
+				continue
+			self.field_types_by_value[ field_descr_v ] = field_descr_n[ 5 : ].lower()
+
+	def find_leaf(self, branch):
+		def _find_leaf(branch):
+			if ( len(branch)==0 ): 
+				return self.tree
+			if ( len(branch)==1 ): 
+				return self.tree['children'][ branch[0] ]
+			else:
+				return _find_leaf( self.tree[ branch[0] ]['children'] )
+		return _find_leaf( copy.deepcopy( branch ) )
+
+	def rfind_leaf_by_name(self, branch, name):
+		if name in branch['children']:
+			return branch['children'][name]
+
+		if branch['parent'] is None:
+			return None
+		if branch['parent']['name'] == name:
+			return branch['parent']
+		else:
+			return self.rfind_leaf_by_name( branch['parent'], name ) 
+
+	def process_message_class(self, cls, branch_path):
+		logging.debug("processing message class %s" % (cls,))
+
+		descr = cls.DESCRIPTOR
+		n = '__'.join( branch_path + [ descr.name ])
+
+		parent_leaf = self.find_leaf( branch_path )
+		leaf = {
+			'name': descr.name,
+			'name_long': n,
+			'label': ' &gt; '.join( branch_path + [ descr.name ]),
+			'path': branch_path + [ descr.name ],
+			'parent': parent_leaf,
+			'children': {},
+			'links': {},
+		}
+		parent_leaf['children'][ descr.name ] = leaf
+
+		self.output["nodes"][ n ]="""
+	%(name)s [
+		shape = plaintext
+		label = """ % {
+	"name": n,
+}
+
+		self.output["nodes"][ n ]+="<<TABLE BORDER=\"0\" CELLBORDER=\"1\" CELLSPACING=\"0\" ALIGN=\"LEFT\" VALIGN=\"TOP\"><TR><TD COLSPAN=\"4\"><B>"+ leaf[ 'label' ] +"</B></TD></TR>"
+
+		for field in descr.fields:
+			field_name = field.name
+			self.output["nodes"][ n ] += "<TR>"
+
+			# field number
+			self.output["nodes"][ n ] += "<TD>"+ str(field.number) +"</TD>" 
+
+			# field multiplicity
+			if field.label == field.LABEL_REQUIRED:
+				mult = '[1..1]'
+				mult_str = "required"
+			if field.label == field.LABEL_OPTIONAL:
+				mult = '[0..1]'
+				mult_str = "optional"
+			if field.label == field.LABEL_REPEATED:
+				mult = '[0..n]'
+				mult_str = "repeated"
+
+			self.output["nodes"][ n ] += "<TD TITLE=\""+ mult_str +"\">" + mult + "</TD>"
+
+			# field type
+			self.output["nodes"][ n ] +=	"<TD ALIGN=\"LEFT\"><FONT COLOR=\"#444444\">&lt;" + self.field_types_by_value[ field.type ] + "&gt;</FONT></TD>"
+
+			# field name with connection port
+			self.output["nodes"][ n ] +=	"<TD ALIGN=\"LEFT\" PORT=\"l_" + field_name + "\">"
+
+
+			if field.type == field.TYPE_ENUM:
+				# enum field, display a list of values
+				self.output["nodes"][ n ] += "<TABLE BORDER=\"0\" CELLBORDER=\"0\" CELLSPACING=\"0\"  ALIGN=\"LEFT\" VALIGN=\"TOP\"><TR><TD COLSPAN=\"3\" ALIGN=\"LEFT\">"+ field_name +"</TD></TR>"
+				for e in field.enum_type.values:
+					self.output["nodes"][ n ] += "<TR><TD WIDTH=\"10\"></TD><TD ALIGN=\"LEFT\"><FONT POINT-SIZE=\""+ str(self.options.font_size - 2) +"\">["+ str(e.number) +"]</FONT></TD><TD ALIGN=\"LEFT\"><I><FONT POINT-SIZE=\""+ str(self.options.font_size - 2) +"\">"+ e.name +"</FONT></I></TD></TR>"
+				self.output["nodes"][ n ] += "</TABLE>"
+			else:
+				# not an enum, just display the name
+				self.output["nodes"][ n ] += field_name
+			self.output["nodes"][ n ] += "</TD>"
+
+
+			# reference to another message
+			if field.type == field.TYPE_MESSAGE:
+				leaf["links"][ field_name ] = field.message_type.name
+
+			self.output["nodes"][ n ] += "</TR>"
+
+
+		self.output["nodes"][ n ]+="</TABLE>>"
+
+		self.output["nodes"][ n ]+="""
+	]
+""" % {
+	"name": n,
+}
+
+	def generate_links(self, branch = None):
+		if branch is None:
+			branch = self.tree
+		for link_source, link_target in branch['links'].iteritems():
+
+			link_target_leaf = self.rfind_leaf_by_name( branch, link_target )
+
+			if link_target_leaf is None:
+				logging.error("Can't find '%s'" % (link_target,))
+			else:
+				self.output["connections"].append( "\t\t"+ branch['name'] +":l_"+ link_source + " -> " + link_target_leaf["name_long"] )
+
+		for child in branch['children'].itervalues():
+			self.generate_links( child )
+
+	def generate_dot_graph(self):
+		f = StringIO.StringIO()
+		f.write( """
+digraph protobuf {
+	fontname = "%(font_type)s"
+	fontsize = %(font_size)s
+	node [
+		shape = record
+		fontname = "%(font_type)s"
+		fontsize = %(font_size)s
+	]
+	edge [
+		fontname = "%(font_type)s"
+		fontsize = %(font_size)s
+		arrowhead = "empty"
+	]
+""" % {
+	"font_type": self.options.font_type,
+	"font_size": self.options.font_size,
+})
+
+		f.write( '\n'.join(self.output["nodes"].values()) )
+		f.write( '\n'.join(self.output["connections"]) )
+
+		f.write( """
+}
+""")
+		graph = f.getvalue()
+		f.close()
+
+		return graph
+
 
 def main():
 	from optparse import OptionParser
@@ -46,6 +230,8 @@ def main():
 	if len(args) == 0:
 		parser.print_help()
 		sys.exit(1)
+
+	o = Proto2Dot( options )
 
 	proto_dir = os.getcwd()
 
@@ -79,10 +265,6 @@ def main():
 
 		os.chdir( tmpdir )
 
-		output = {
-			'nodes': {},
-			'connections': [],
-		}
 
 		for filename in glob.glob( "*.py" ):
 			module_name = os.path.splitext( filename )[0]
@@ -91,122 +273,37 @@ def main():
 
 			try:
 
-				for n in dir(m):
-					if n[0]=='_':
-						continue
-					cls = getattr(m, n)
-					if not isinstance( cls, m._reflection.GeneratedProtocolMessageType ):
-						continue
+				def _search_for_message_classes(ctx, branch_path = None):
+					if branch_path is None:
+						branch_path = []
 
-					logging.debug("found class %s" % (cls,))
-					
-					descr = cls.DESCRIPTOR
-					
-					field_types_by_value={}
-					
-					for field_descr_n, field_descr_v in m._descriptor.FieldDescriptor.__dict__.iteritems():
-						if not field_descr_n.startswith('TYPE_'):
+					for n in dir(ctx):
+						if n[0]=='_':
 							continue
-						field_types_by_value[ field_descr_v ] = field_descr_n[ 5 : ].lower()
+						cls = getattr(ctx, n)
 
-					output["nodes"][ n ]="""
-	%(name)s [
-		shape = plaintext
-		label = """ % {
-	"name": n,
-}
+						if not isinstance( cls, reflection.GeneratedProtocolMessageType ):
+							continue
 
-					output["nodes"][ n ]+="<<TABLE BORDER=\"0\" CELLBORDER=\"1\" CELLSPACING=\"0\" ALIGN=\"LEFT\" VALIGN=\"TOP\"><TR><TD COLSPAN=\"4\"><B>"+ n +"</B></TD></TR>"
+						o.process_message_class( cls, branch_path = branch_path )
 
-					for field in descr.fields:
-						field_name = field.name
-						output["nodes"][ n ] += "<TR>"
-
-						# field number
-						output["nodes"][ n ] += "<TD>"+ str(field.number) +"</TD>" 
-
-						# field multiplicity
-						if field.label == field.LABEL_REQUIRED:
-							mult = '[1..1]'
-							mult_str = "required"
-						if field.label == field.LABEL_OPTIONAL:
-							mult = '[0..1]'
-							mult_str = "optional"
-						if field.label == field.LABEL_REPEATED:
-							mult = '[0..n]'
-							mult_str = "repeated"
-
-						output["nodes"][ n ] += "<TD TITLE=\""+ mult_str +"\">" + mult + "</TD>"
-						
-						# field type
-						output["nodes"][ n ] +=	"<TD ALIGN=\"LEFT\"><FONT COLOR=\"#444444\">&lt;" + field_types_by_value[ field.type ] + "&gt;</FONT></TD>"
-						
-						# field name with connection port
-						output["nodes"][ n ] +=	"<TD ALIGN=\"LEFT\" PORT=\"l_" + field_name + "\">"
-						
-
-						if field.type == field.TYPE_ENUM:
-							# enum field, display a list of values
-							output["nodes"][ n ] += "<TABLE BORDER=\"0\" CELLBORDER=\"0\" CELLSPACING=\"0\"  ALIGN=\"LEFT\" VALIGN=\"TOP\"><TR><TD COLSPAN=\"3\" ALIGN=\"LEFT\">"+ field_name +"</TD></TR>"
-							for e in field.enum_type.values:
-								output["nodes"][ n ] += "<TR><TD WIDTH=\"10\"></TD><TD ALIGN=\"LEFT\"><FONT POINT-SIZE=\""+ str(options.font_size - 2) +"\">["+ str(e.number) +"]</FONT></TD><TD ALIGN=\"LEFT\"><I><FONT POINT-SIZE=\""+ str(options.font_size - 2) +"\">"+ e.name +"</FONT></I></TD></TR>"
-							output["nodes"][ n ] += "</TABLE>"
-						else:
-							# not an enum, just display the name
-							output["nodes"][ n ] += field_name
-						output["nodes"][ n ] += "</TD>"
+						_search_for_message_classes(cls, branch_path = branch_path + [ n ])
 
 
-						# reference to another message
-						if field.type == field.TYPE_MESSAGE:
-							output["connections"].append( "\t\t"+ n +":l_"+ field_name + " -> " + field.message_type.name )
-							
-						output["nodes"][ n ] += "</TR>"
+				_search_for_message_classes(m)
 
-
-					output["nodes"][ n ]+="</TABLE>>"
-
-					output["nodes"][ n ]+="""
-	]
-""" % {
-	"name": n,
-}
 			except:
 				logging.error("Error processing '%s', skipping: \n%s" % (module_name, traceback.format_exc(),))
 
-		f = StringIO.StringIO()
-		f.write( """
-digraph protobuf {
-	fontname = "%(font_type)s"
-	fontsize = %(font_size)s
-	node [
-		shape = record
-		fontname = "%(font_type)s"
-		fontsize = %(font_size)s
-	]
-	edge [
-		fontname = "%(font_type)s"
-		fontsize = %(font_size)s
-		arrowhead = "empty"
-	]
-""" % {
-	"font_type": options.font_type,
-	"font_size": options.font_size,
-})
+		#~ logging.debug("tree: \n%s" % (pprint.pformat(o.tree),))
 
-		f.write( '\n'.join(output["nodes"].values()) )
-		f.write( '\n'.join(output["connections"]) )
+		o.generate_links()
 
-		f.write( """
-}
-""")
-		graph = f.getvalue()
-		f.close()
-
+		graph = o.generate_dot_graph()
 
 		# Generate graphviz file
 		dot_filename = proto_filename_+".dot"
-		
+
 		f = open(dot_filename, "wb")
 		f.write( graph )
 		f.close()
