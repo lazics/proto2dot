@@ -60,14 +60,27 @@ class Proto2Dot(object):
 		raise Exception("Unknown field label");
 
 	def check_port_side(self, field):
-		base_prev = re.match('^([^0-9]*)[0-9]*$', self.prev_field_name).group(1)
-		base_cur = re.match('^([^0-9]*)[0-9]*$', field.name).group(1)
+		#~ logging.debug("field.name: %s", field.name)
+		base_prev = re.match('^([^0-9]*([0-9]+[^0-9]+)*)[0-9]*$', self.prev_field_name).group(1)
+		m = re.match('^([^0-9]*([0-9]+[^0-9]+)*)[0-9]*$', field.name)
+		base_cur = m.group(1)
 		if base_prev != base_cur:
 			self.port_on_left_side = not self.port_on_left_side
 		self.prev_field_name = field.name
 
+	def is_excluded(self, name):
+		if self.options.exclude:
+			for p in self.options.exclude:
+				if ( re.match( ".*"+p+".*", name, re.IGNORECASE ) is not None ):
+					return True
+		return False
+
 	def process_message_class(self, message):
-		#~ logging.debug("processing message class %s" % (message,))
+		if self.is_excluded(message.name):
+			logging.debug("message '%s' excluded" % (message.name, ) )
+			return
+
+		logging.debug("processing message %s" % (message.name,))
 
 		self.messages[ message.name ] = message
 
@@ -83,6 +96,11 @@ class Proto2Dot(object):
 		self.prev_field_name = ''
 		self.port_on_left_side = True
 		for field in message.fields:
+
+			if self.is_excluded(field.name):
+				logging.debug("field '%s->%s' excluded" % (message.name, field.name, ) )
+				continue
+
 			self.output["nodes"][ message.name ] += "<TR>"
 
 			port = " PORT=\"l_" + field.name + "\""
@@ -171,6 +189,7 @@ def main():
 	parser.add_option( "-o", "--output", dest="output", help="Output directory", type="string", default="." )
 	parser.add_option( "-c", "--protoc", dest="protoc", help="Protocol buffer compiler", type="string", default="protoc" )
 	parser.add_option( "-I", "--proto_path", dest="proto_path", help="directory in which to search for imports (passed as command-line argument to protoc)", action="append", type="string" )
+	parser.add_option( "-x", "--exclude", dest="exclude", help="Exclude field/message names matching the specified regexp pattern", type="string", action="append")
 	parser.add_option( "-f", "--font", dest="font_type", help="Font type", type="string", default="Bitstream Vera Sans" )
 	parser.add_option( "--font-size", dest="font_size", help="Font size", type="int", default=9 )
 	parser.add_option( "--doxygen", dest="doxygen", help="Generate Doxygen output", action="store_true", default=False)
